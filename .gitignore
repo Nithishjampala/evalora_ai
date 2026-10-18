@@ -2,8 +2,10 @@
 .env
 .env.*
 !.env.example
-.env.local
+service_account.json
+credentials.json
+__pycache__/
+*.py[cod]
 .venv/
 venv/
-__pycache__/
-*.pyc
+.DS_Store
