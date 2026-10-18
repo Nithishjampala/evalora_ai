@@ -1,9 +1,0 @@
-fastapi
-python-multipart
-google-genai
-gspread
-google-auth
-pymupdf
-python-docx
-python-pptx
-striprtf
