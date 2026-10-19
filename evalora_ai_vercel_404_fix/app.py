@@ -11,9 +11,11 @@ from google.oauth2.service_account import Credentials
 app=FastAPI(title="Evalora AI")
 SPREADSHEET_ID=os.getenv("SPREADSHEET_ID","1L8FuY_CFURGrRkWbEFAG_QsHTyF0oUJYfpCfNAl-sOw")
 WORKSHEET=os.getenv("GOOGLE_WORKSHEET","Evaluations")
-MODELS=[os.getenv("GEMINI_MODEL_3","gemini-3.5-flash-lite"),os.getenv("GEMINI_MODEL_1","gemini-3.8-flash"),os.getenv("GEMINI_MODEL_2","gemini-3.6-flash")]
+MODELS=[os.getenv("GEMINI_MODEL_1","gemini-3.8-flash"),os.getenv("GEMINI_MODEL_2","gemini-3.6-flash"),os.getenv("GEMINI_MODEL_3","gemini-3.5-flash-lite")]
 RATING_SCORES={"Outstanding":100,"Very Good":85,"Good":70,"Needs Improvement":40,"Incomplete":0}
-HEADERS=["Name","Project ID","Project Name","Phase Type","Questions","AI Confidence Score","Feedback","Suggestions","Overall Score"]
+BASE_HEADERS=["Name","Project ID","Project Name","Phase Type","Questions","AI Confidence Score","Feedback","Suggestions","Overall Score"]
+EXTRA_HEADERS=["Model Name","Answer Accuracy (%)"]
+HEADERS=BASE_HEADERS+EXTRA_HEADERS
 PHASES={
 "Ideation":["How well did the team articulate the problem statement and support it with relevant statistics, data or evidence?","Is the proposed solution addressing a meaningful need for the identified users/stakeholders?","How well has the team researched existing solutions and competitors?","Is the proposed solution feasible and unique?","How would you rate the overall quality of the Ideation submission?","Additional feedback to candidate"],
 "Design":["How effectively does the design demonstrate the proposed solution?","How well does the design address the identified problem?","How effectively has the team demonstrated the core features?","How feasible is the design from a technical perspective?","How would you rate the overall quality of the Design submission?","Additional feedback to candidate"],
@@ -123,12 +125,12 @@ STUDENT SUBMISSION:
 {submission[:30000]}
 
 PART A — PHASE-SPECIFIC RATINGS:
-Evaluate Q1-Q5 independently using the student's submission and the selected phase's criteria. For Ideation, use explicit official guidelines as relevant but never treat sample topic/content as mandatory. For Design, Build, and Demo, use the student submission and the selected phase's questions only; do not use the Ideation guideline or sample PPT. Return only these exact ratings: Outstanding, Very Good, Good, Needs Improvement, Incomplete. Outstanding=strong evidence/no major gaps; Very Good=minor gaps; Good=some meaningful details missing; Needs Improvement=major gaps; Incomplete=absent/not assessable. Q5 is an independent overall quality rating. Q6 is constructive feedback, not a rating. Give specific actionable suggestions grounded in the student's own project. ai_confidence_score is 0-100 confidence in the readability and completeness of the student evidence, not confidence that the project matches the sample. Do not return overall score; app calculates it. Mapping: Outstanding 100, Very Good 85, Good 70, Needs Improvement 40, Incomplete 0.
+Evaluate Q1-Q5 independently using the student's submission and the selected phase's criteria. For Ideation, use explicit official guidelines as relevant but never treat sample topic/content as mandatory. For Design, Build, and Demo, use the student submission and the selected phase's questions only; do not use the Ideation guideline or sample PPT. Return only these exact ratings: Outstanding, Very Good, Good, Needs Improvement, Incomplete. Outstanding=strong evidence/no major gaps; Very Good=minor gaps; Good=some meaningful details missing; Needs Improvement=major gaps; Incomplete=absent/not assessable. Q5 is an independent overall quality rating. Q6 is constructive feedback, not a rating. Give specific actionable suggestions grounded in the student's own project. ai_confidence_score is 0-100 confidence in the readability and completeness of the student evidence, not confidence that the project matches the sample. answer_accuracy is a separate AI-estimated 0-100 assessment of how accurately the ratings, feedback, and suggestions reflect evidence in the student's submission. Be conservative: deduct for unsupported claims, overlooked contradictory evidence, or conclusions not justified by the submission. This is an AI estimate, not independently verified ground-truth accuracy. Do not return overall score; app calculates it. Mapping: Outstanding 100, Very Good 85, Good 70, Needs Improvement 40, Incomplete 0.
 
 {compliance_instructions}
 
 Return valid JSON only, no markdown fences, with exactly this structure and actual results:
-{{"phase_answers":[{{"question":"{qs[0]}","answer":"Good"}},{{"question":"{qs[1]}","answer":"Very Good"}},{{"question":"{qs[2]}","answer":"Needs Improvement"}},{{"question":"{qs[3]}","answer":"Good"}},{{"question":"{qs[4]}","answer":"Needs Improvement"}},{{"question":"{qs[5]}","answer":"Constructive feedback."}}],"ai_confidence_score":80,"feedback":"Evidence-based overall feedback.","suggestions":"Specific actionable suggestions.","guideline_compliance":[]}}
+{{"phase_answers":[{{"question":"{qs[0]}","answer":"Good"}},{{"question":"{qs[1]}","answer":"Very Good"}},{{"question":"{qs[2]}","answer":"Needs Improvement"}},{{"question":"{qs[3]}","answer":"Good"}},{{"question":"{qs[4]}","answer":"Needs Improvement"}},{{"question":"{qs[5]}","answer":"Constructive feedback."}}],"ai_confidence_score":80,"answer_accuracy":90,"feedback":"Evidence-based overall feedback.","suggestions":"Specific actionable suggestions.","guideline_compliance":[]}}
 Example values are structural only; generate actual answers from the documents. For Ideation, populate guideline_compliance with actual requirement-level results; for Design, Build, or Demo, return an empty array.'''
 
 def call_gemini(prompt):
@@ -149,14 +151,24 @@ def connect_sheets():
  creds=Credentials.from_service_account_info(json.loads(raw),scopes=['https://www.googleapis.com/auth/spreadsheets','https://www.googleapis.com/auth/drive'])
  book=gspread.authorize(creds).open_by_key(SPREADSHEET_ID)
  try: ws=book.worksheet(WORKSHEET)
- except gspread.WorksheetNotFound: ws=book.add_worksheet(title=WORKSHEET,rows=1000,cols=9)
+ except gspread.WorksheetNotFound: ws=book.add_worksheet(title=WORKSHEET,rows=1000,cols=len(HEADERS))
+ if ws.col_count < len(HEADERS): ws.resize(cols=len(HEADERS))
  headers=ws.row_values(1)
- if not headers: ws.append_row(HEADERS,value_input_option='RAW')
- elif headers[:9]!=HEADERS: raise ValueError('Worksheet row 1 must contain these exact nine headers: '+' | '.join(HEADERS))
+ if not headers:
+  ws.update(range_name='A1:K1',values=[HEADERS],value_input_option='RAW')
+ else:
+  if headers[:len(BASE_HEADERS)] != BASE_HEADERS:
+   raise ValueError('Worksheet row 1 must begin with these nine headers: '+' | '.join(BASE_HEADERS))
+  # Add the two requested columns after the existing nine columns, preserving old records.
+  for offset, expected in enumerate(EXTRA_HEADERS, start=len(BASE_HEADERS)):
+   existing = headers[offset] if len(headers) > offset else ''
+   if existing and existing != expected:
+    raise ValueError(f'Google Sheets column {offset + 1} must be named {expected!r}, not {existing!r}.')
+  ws.update(range_name='J1:K1',values=[EXTRA_HEADERS],value_input_option='RAW')
  return ws
 
 def append_to_google_sheet(row):
- if len(row)!=9: raise ValueError('Google Sheets expects exactly 9 columns.')
+ if len(row)!=len(HEADERS): raise ValueError(f'Google Sheets expects exactly {len(HEADERS)} columns.')
  connect_sheets().append_row(row,value_input_option='RAW')
 
 def compliance_report(items, phase="Ideation"):
@@ -223,10 +235,14 @@ async def evaluate(
   except (ValueError, TypeError):
    confidence = 0
   confidence = max(0, min(100, confidence))
+  try:
+   answer_accuracy = round(max(0, min(100, float(result.get('answer_accuracy')))), 2)
+  except (ValueError, TypeError):
+   answer_accuracy = ''
   feedback = str(result.get('feedback', '')).strip() or 'No overall feedback provided.'
   suggestions = str(result.get('suggestions', '')).strip() or 'No suggestions provided.'
   questions = '\n\n'.join((f"Q{i}: {x['question']}\nRating: {x['answer']}" if i <= 5 else f"Q{i}: {x['question']}\nFeedback: {x['answer']}") for i, x in enumerate(answers, 1))
-  append_to_google_sheet([name, project_id, project_name, phase, questions, confidence, feedback, suggestions, score])
+  append_to_google_sheet([name, project_id, project_name, phase, questions, confidence, feedback, suggestions, score, model, answer_accuracy])
   lines = ['# Evaluation Results', '', f'**Student:** {name}', f'**Project ID:** {project_id}', f'**Project:** {project_name}', f'**Phase:** {phase}', '', '## Overall Score: ' + str(score) + '/100', '', f'**AI Confidence:** {confidence}/100', '', '## Phase Ratings', '']
   for i, x in enumerate(answers[:5], 1):
    lines += [f"### Q{i}: {x['question']}", '', f"**Rating:** {x['answer']}", '']
