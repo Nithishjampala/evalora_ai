@@ -3,159 +3,67 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Evalora AI | Project Evaluation</title>
+  <meta name="api-base" content="">
+  <meta name="video-app-url" content="/video">
+  <title>Evalora AI | Project Evaluation & Video Coach</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@500;600;700;800&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/style.css">
 </head>
 <body>
   <div class="glow g1"></div>
   <div class="glow g2"></div>
-
   <nav>
-    <a class="brand" href="/">
-      <span class="logo">E</span> evalora<span class="ai">.ai</span>
-    </a>
-    <span class="pill"><i></i> AI evaluation workspace</span>
+    <a class="brand" href="/" aria-label="Evalora AI home"><span class="logo">E</span> evalora<span class="ai">.ai</span></a>
+    <div class="nav-right"><span class="pill"><i></i> AI evaluation workspace</span><a class="nav-link" id="videoNav" href="/video" target="_blank" rel="noopener noreferrer">Video Analyzer ↗</a></div>
   </nav>
 
   <main>
     <header>
-      <div class="eyebrow">PROJECT ASSESSMENT PLATFORM</div>
+      <div class="eyebrow">AI-POWERED PROJECT & PRESENTATION REVIEW</div>
       <h1>Turn project work into<br><span>actionable insight.</span></h1>
-      <p>Phase-specific scoring, evidence-based feedback and guideline compliance — all in one report.</p>
-      <div class="highlights">
-        <span>✦ Gemini-powered review</span>
-        <span>◈ Four evaluation phases</span>
-        <span>↗ Google Sheets logging</span>
-      </div>
+      <p>Evaluate project submissions across four phases, check Ideation guideline compliance, or review a presentation video with communication coaching.</p>
+      <div class="highlights"><span>✦ Evidence-based Gemini review</span><span>◈ Four evaluation phases</span><span>↗ Google Sheets logging</span></div>
     </header>
 
-    <section class="panel">
-      <div class="section-head">
-        <div>
-          <small>01 / PROJECT DETAILS</small>
-          <h2>Set up your evaluation</h2>
-        </div>
-        <span class="secure">● Secure submission</span>
-      </div>
+    <section class="feature-strip" aria-label="Evalora features">
+      <div><span class="feature-icon">▤</span><div><strong>Project Evaluation</strong><p>Ratings, feedback, suggestions and Ideation compliance.</p></div></div>
+      <div><span class="feature-icon">▶</span><div><strong>Video Communication Coach</strong><p>Transcript, communication score and speaking practice plan.</p></div><a class="text-link" id="videoCardLink" href="/video" target="_blank" rel="noopener noreferrer">Open Video Analyzer in new tab ↗</a></div>
+    </section>
 
+    <section class="panel" id="project-evaluation">
+      <div class="section-head"><div><small>01 / PROJECT DETAILS</small><h2>Set up your evaluation</h2></div><span class="secure">● Secure submission</span></div>
       <form id="form">
         <div class="fields">
-          <label>
-            Student / evaluator name <b>*</b>
-            <input name="name" placeholder="e.g. Chethan" required maxlength="120">
-          </label>
-
-          <label>
-            Project ID <b>*</b>
-            <input name="project_id" placeholder="e.g. TEAM-001" required maxlength="100">
-          </label>
-
-          <label class="wide">
-            Project name <b>*</b>
-            <input name="project_name" placeholder="Give your project a clear name" required maxlength="200">
-          </label>
-
-          <label>
-            Evaluation phase <b>*</b>
-            <select name="phase" required>
-              <option>Ideation</option>
-              <option>Design</option>
-              <option>Build</option>
-              <option>Demo</option>
-            </select>
-          </label>
-
-          <div class="phase-note">
-            <strong id="phaseTitle">Ideation review</strong>
-            <p id="phaseDesc">Problem clarity, user need, research, feasibility and originality.</p>
-          </div>
+          <label>Student / evaluator name <b>*</b><input name="name" placeholder="e.g. Chethan" required maxlength="120" autocomplete="name"></label>
+          <label>Project ID <b>*</b><input name="project_id" placeholder="e.g. TEAM-001" required maxlength="100"></label>
+          <label class="wide">Project name <b>*</b><input name="project_name" placeholder="Give your project a clear name" required maxlength="200"></label>
+          <label>Evaluation phase <b>*</b><select name="phase" id="phase" required><option value="Ideation">Ideation</option><option value="Design">Design</option><option value="Build">Build</option><option value="Demo">Demo</option></select></label>
+          <div class="phase-note" aria-live="polite"><strong id="phaseTitle">Ideation review</strong><p id="phaseDesc">Problem clarity, user need, research, feasibility and originality.</p></div>
         </div>
 
-        <div class="section-head upload-head">
-          <div>
-            <small>02 / SOURCE DOCUMENTS</small>
-            <h2>Upload the evidence</h2>
-          </div>
-          <span class="limit">8 MB max / file</span>
-        </div>
-
+        <div class="section-head upload-head"><div><small>02 / SOURCE DOCUMENTS</small><h2>Upload the evidence</h2></div><span class="limit">8 MB max / file</span></div>
         <div class="uploads">
-          <label class="drop" for="guideline">
-            <input id="guideline" name="guideline_file" type="file" accept=".txt,.pdf,.docx,.pptx,.rtf,.md,.csv" required>
-            <span class="file-icon">▤</span>
-            <strong>Evaluation guidelines</strong>
-            <p>Rubric, requirements or assessment criteria</p>
-            <small>PDF · DOCX · PPTX · TXT · RTF · MD · CSV</small>
-            <em id="guidelineName">Choose a guideline file</em>
-          </label>
-
-          <label class="drop" for="submission">
-            <input id="submission" name="submission_file" type="file" accept=".txt,.pdf,.docx,.pptx,.rtf,.md,.csv" required>
-            <span class="file-icon">↥</span>
-            <strong>Student submission</strong>
-            <p>Report, proposal, presentation or project notes</p>
-            <small>PDF · DOCX · PPTX · TXT · RTF · MD · CSV</small>
-            <em id="submissionName">Choose a submission file</em>
-          </label>
+          <label class="drop" for="guideline"><input id="guideline" name="guideline_file" type="file" accept=".txt,.pdf,.docx,.pptx,.rtf,.md,.csv"><span class="file-icon">▤</span><strong>Official evaluation guidelines <span class="required-mark" id="guidelineRequired">*</span></strong><p>Required for Ideation only</p><small>PDF · DOCX · PPTX · TXT · RTF · MD · CSV</small><em id="guidelineName">Choose a guideline file</em></label>
+          <label class="drop" for="submission"><input id="submission" name="submission_file" type="file" accept=".txt,.pdf,.docx,.pptx,.rtf,.md,.csv" required><span class="file-icon">↥</span><strong>Student submission <span class="required-mark">*</span></strong><p>Report, proposal, presentation or project notes</p><small>PDF · DOCX · PPTX · TXT · RTF · MD · CSV</small><em id="submissionName">Choose a submission file</em></label>
+          <label class="drop optional-drop" for="sample"><input id="sample" name="sample_file" type="file" accept=".pdf,.docx,.pptx,.txt,.rtf,.md,.csv"><span class="file-icon">◇</span><strong>Sample project reference <span class="optional-mark">OPTIONAL</span></strong><p>Used only during Ideation; illustrative, not mandatory criteria</p><small>PDF · DOCX · PPTX · TXT · RTF · MD · CSV</small><em id="sampleName">Choose a sample reference</em></label>
         </div>
-
-        <div class="notice">
-          ⓘ <span>Evaluation uses readable text extracted from your documents. Scanned PDFs and image-only slides may need OCR.</span>
-        </div>
-
-        <button id="submit" class="primary" type="submit">
-          <span>Evaluate project</span><b>↗</b>
-        </button>
-
+        <div class="notice"><span>ⓘ</span><span>Guidelines and sample references are used only for Ideation. For Design, Build and Demo, only the student submission is evaluated. Scanned PDFs and image-only slides may need OCR.</span></div>
+        <button id="submit" class="primary" type="submit"><span>Evaluate project</span><b>↗</b></button>
         <p id="status" role="status" aria-live="polite"></p>
       </form>
     </section>
 
     <section id="results" class="panel results" hidden>
-      <div class="section-head">
-        <div>
-          <small>03 / EVALUATION REPORT</small>
-          <h2>Your results</h2>
-        </div>
-        <span class="success">Completed</span>
-      </div>
-
-      <div class="metrics">
-        <div>
-          <small>OVERALL SCORE</small>
-          <strong id="score">—</strong>
-          <span>out of 100</span>
-        </div>
-        <div>
-          <small>AI CONFIDENCE</small>
-          <strong id="confidence">—</strong>
-          <span>evidence completeness</span>
-        </div>
-        <div>
-          <small>MODEL USED</small>
-          <strong class="model" id="model">—</strong>
-          <span>Gemini fallback chain</span>
-        </div>
-      </div>
-
-      <div class="report-head">
-        Full evaluation report
-        <button type="button" id="copy">Copy report</button>
-      </div>
-
-      <pre id="report"></pre>
-      <p id="saveStatus" class="saved"></p>
+      <div class="section-head"><div><small>03 / EVALUATION REPORT</small><h2>Your results</h2></div><span class="success">Completed</span></div>
+      <div class="metrics"><div><small>OVERALL SCORE</small><strong id="score">—</strong><span>out of 100</span></div><div><small>AI CONFIDENCE</small><strong id="confidence">—</strong><span>evidence completeness</span></div><div><small>MODEL USED</small><strong class="model" id="model">—</strong><span>Project evaluation model</span></div></div>
+      <div class="report-head"><span>Full evaluation report</span><button type="button" id="copy">Copy report</button></div>
+      <pre id="report"></pre><p id="saveStatus" class="saved"></p>
     </section>
 
-    <footer>
-      <strong>evalora.ai</strong>
-      <span>Evidence first. Better projects follow.</span>
-      <span>AI-assisted assessment</span>
-    </footer>
+    <footer><strong>evalora.ai</strong><span>Evidence first. Better projects follow.</span><span>AI-assisted assessment</span></footer>
   </main>
-
-  <script src="/script.js?v=evalora-debug-20261019-2"></script>
+  <script src="/script.js?v=evalora-20261019-3" defer></script>
 </body>
 </html>
