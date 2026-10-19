@@ -1,4 +1,4 @@
-import os,re,json,io,hashlib
+import os,re,json,io
 from pathlib import Path
 from fastapi import FastAPI,UploadFile,File,Form,HTTPException
 import fitz,docx,gspread
@@ -15,8 +15,7 @@ MODELS=["gemini-3.5-flash-lite"]  # Evalora uses only this model; no fallback mo
 RATING_SCORES={"Outstanding":100,"Very Good":85,"Good":70,"Needs Improvement":40,"Incomplete":0}
 BASE_HEADERS=["Name","Project ID","Project Name","Phase Type","Questions","AI Confidence Score","Feedback","Suggestions","Overall Score"]
 EXTRA_HEADERS=["Model Name","Answer Accuracy (%)"]
-CACHE_HEADERS=["Input Fingerprint", "Cached Report"]
-HEADERS=BASE_HEADERS+EXTRA_HEADERS+CACHE_HEADERS
+HEADERS=BASE_HEADERS+EXTRA_HEADERS
 PHASES={
 "Ideation":["How well did the team articulate the problem statement and support it with relevant statistics, data or evidence?","Is the proposed solution addressing a meaningful need for the identified users/stakeholders?","How well has the team researched existing solutions and competitors?","Is the proposed solution feasible and unique?","How would you rate the overall quality of the Ideation submission?","Additional feedback to candidate"],
 "Design":["How effectively does the design demonstrate the proposed solution?","How well does the design address the identified problem?","How effectively has the team demonstrated the core features?","How feasible is the design from a technical perspective?","How would you rate the overall quality of the Design submission?","Additional feedback to candidate"],
@@ -82,7 +81,7 @@ def normalize_answers(raw,questions):
  return out
 
 def add_rating_scores_to_report(report):
- """Add numeric question scores to older cached reports as well as new ones."""
+ """Ensure report question ratings include their numeric rating scores."""
  if not report:
   return report
  pattern=r'(\*\*Rating:\*\*\s*)(Outstanding|Very Good|Needs Improvement|Incomplete|Good)(?!\s*\n\s*\*\*Rating Score:\*\*)'
@@ -183,63 +182,38 @@ def call_gemini(prompt):
   raise RuntimeError(f'{model} evaluation failed: {str(e)[:700]}') from e
 
 def connect_sheets():
+ """Connect to the visible evaluations sheet and keep it to columns A:K.
+
+ Each request is evaluated anew; this function does not create or use a cache.
+ If an older version added Input Fingerprint and Cached Report in columns L:M,
+ those trailing columns are removed while the existing A:K evaluation records
+ are preserved.
+ """
  raw=os.getenv('GOOGLE_SERVICE_ACCOUNT_JSON')
  if not raw: raise ValueError('GOOGLE_SERVICE_ACCOUNT_JSON is missing from Vercel Environment Variables.')
  creds=Credentials.from_service_account_info(json.loads(raw),scopes=['https://www.googleapis.com/auth/spreadsheets','https://www.googleapis.com/auth/drive'])
  book=gspread.authorize(creds).open_by_key(SPREADSHEET_ID)
- try: ws=book.worksheet(WORKSHEET)
- except gspread.WorksheetNotFound: ws=book.add_worksheet(title=WORKSHEET,rows=1000,cols=len(HEADERS))
- if ws.col_count < len(HEADERS): ws.resize(cols=len(HEADERS))
- headers=ws.row_values(1)
- if not headers:
-  ws.update(range_name='A1:M1',values=[HEADERS],value_input_option='RAW')
- else:
-  if headers[:len(BASE_HEADERS)] != BASE_HEADERS:
-   raise ValueError('Worksheet row 1 must begin with these nine headers: '+' | '.join(BASE_HEADERS))
-  for offset, expected in enumerate(EXTRA_HEADERS, start=len(BASE_HEADERS)):
-   existing = headers[offset] if len(headers) > offset else ''
-   if existing and existing != expected:
-    raise ValueError(f'Google Sheets column {offset + 1} must be named {expected!r}, not {existing!r}.')
-  # Existing evaluation rows and columns A:K are preserved; cache metadata is appended in L:M.
-  ws.update(range_name='J1:K1',values=[EXTRA_HEADERS],value_input_option='RAW')
-  ws.update(range_name='L1:M1',values=[CACHE_HEADERS],value_input_option='RAW')
+ try:
+  ws=book.worksheet(WORKSHEET)
+ except gspread.WorksheetNotFound:
+  ws=book.add_worksheet(title=WORKSHEET,rows=1000,cols=len(HEADERS))
+
+ old_values=ws.get_all_values()
+ old_headers=old_values[0] if old_values else []
+ if old_headers and old_headers[:len(BASE_HEADERS)] != BASE_HEADERS:
+  raise ValueError('Worksheet row 1 must begin with these nine headers: '+' | '.join(BASE_HEADERS))
+
+ # The two requested cache columns are not needed. Keep only A:K and preserve
+ # all existing evaluation rows in those columns.
+ if ws.col_count != len(HEADERS):
+  ws.resize(cols=len(HEADERS))
+ ws.update(range_name='A1:K1',values=[HEADERS],value_input_option='RAW')
  return ws
 
-def make_fingerprint(name, project_id, project_name, phase, guidelines, submission, sample_text):
- payload={
-  'version': 2,
-  'name': str(name).strip(), 'project_id': str(project_id).strip(),
-  'project_name': str(project_name).strip(), 'phase': phase,
-  'guidelines': guidelines if phase == 'Ideation' else '',
-  'submission': submission,
-  'sample_reference': sample_text if phase == 'Ideation' else '',
-  'model': 'gemini-3.5-flash-lite',
-  'rubric_version': 'consistent-rubric-v2'
- }
- canonical=json.dumps(payload,ensure_ascii=False,sort_keys=True,separators=(',',':'))
- return hashlib.sha256(canonical.encode('utf-8')).hexdigest()
-
-def find_cached_evaluation(fingerprint):
- """Return a prior exact-input report, if available, without calling Gemini again."""
- ws=connect_sheets()
- fingerprints=ws.col_values(12)  # Column L: Input Fingerprint
- reports=ws.col_values(13)       # Column M: Cached Report
- for row_index in range(2, len(fingerprints)+1):
-  if fingerprints[row_index-1] == fingerprint and row_index-1 < len(reports) and reports[row_index-1].strip():
-   row=ws.row_values(row_index)
-   score=row[8] if len(row)>8 else ''
-   confidence=row[5] if len(row)>5 else ''
-   model=row[9] if len(row)>9 else 'gemini-3.5-flash-lite'
-   try: score_value=float(score)
-   except (ValueError,TypeError): score_value=score
-   try: confidence_value=float(confidence)
-   except (ValueError,TypeError): confidence_value=confidence
-   return {'report':reports[row_index-1], 'overall_score':score_value, 'confidence':confidence_value, 'model_used':model}
- return None
-
 def append_to_google_sheet(row):
- if len(row)!=len(HEADERS): raise ValueError(f'Google Sheets expects exactly {len(HEADERS)} columns.')
- connect_sheets().append_row(row,value_input_option='RAW')
+ if len(row)!=len(HEADERS): raise ValueError(f'Google Sheets expects exactly {len(HEADERS)} columns (A:K).')
+ ws=connect_sheets()
+ ws.append_row(row,value_input_option='RAW')
 
 def compliance_report(items, phase="Ideation"):
  lines=['### Guideline vs Student Submission','','Assessment compares meaning and evidence, not literal text matching.','']
@@ -296,23 +270,9 @@ async def evaluate(
    guidelines = ""
    sample_text = ""
 
-  fingerprint = make_fingerprint(name, project_id, project_name, phase, guidelines, submission, sample_text)
-  cached = find_cached_evaluation(fingerprint)
-  if cached is not None:
-   cached_report=add_rating_scores_to_report(cached['report'])
-   return {
-    'success': True,
-    'report': cached_report,
-    'phase_ratings': get_phase_ratings(cached_report),
-    'rating_score_mapping': RATING_SCORES,
-    'status': 'Identical submission found. Reused the previously saved evaluation; no duplicate row was added.',
-    'overall_score': cached['overall_score'],
-    'confidence': cached['confidence'],
-    'model_used': cached['model_used'],
-    'sheet_saved': True,
-    'cache_hit': True
-   }
-
+  # IMPORTANT: Always run a fresh Gemini evaluation for every submission,
+  # including when the same document was submitted earlier. Each result gets
+  # its own new row in Google Sheets; no old score is reused.
   result, model = call_gemini(create_prompt(name, project_id, project_name, phase, guidelines, submission, sample_text))
   answers = normalize_answers(result.get('phase_answers', []), PHASES[phase])
   compliance = normalize_compliance(result.get('guideline_compliance', [])) if phase == 'Ideation' else []
@@ -335,9 +295,10 @@ async def evaluate(
   lines += ['## Additional Feedback', '', answers[5]['answer'], '', '## Overall Feedback', '', feedback, '', '## Suggestions', '', suggestions, '', compliance_report(compliance, phase)]
   report='\n'.join(lines)
   phase_ratings=[{'question_number':i,'question':x['question'],'rating':x['answer'],'rating_score':x['rating_score']} for i,x in enumerate(answers[:5],1)]
-  append_to_google_sheet([name, project_id, project_name, phase, questions, confidence, feedback, suggestions, score, model, answer_accuracy, fingerprint, report])
+  sheet_row=[name, project_id, project_name, phase, questions, confidence, feedback, suggestions, score, model, answer_accuracy]
+  append_to_google_sheet(sheet_row)
   compliance_status = 'Ideation guideline compliance included.' if phase == 'Ideation' else 'Ideation guideline/sample PPT skipped for this phase.'
-  return {'success': True, 'report': report, 'phase_ratings': phase_ratings, 'rating_score_mapping': RATING_SCORES, 'status': f'Evaluation completed using {model}. Saved to Google Sheets. {compliance_status}', 'overall_score': score, 'confidence': confidence, 'model_used': model, 'sheet_saved': True, 'cache_hit': False}
+  return {'success': True, 'report': report, 'phase_ratings': phase_ratings, 'rating_score_mapping': RATING_SCORES, 'status': f'Fresh evaluation completed using {model}. Saved as a new row in Google Sheets. {compliance_status}', 'overall_score': score, 'confidence': confidence, 'model_used': model, 'sheet_saved': True, 'cache_hit': False}
  except HTTPException:
   raise
  except Exception as e:
