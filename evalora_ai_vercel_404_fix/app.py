@@ -11,7 +11,7 @@ from google.oauth2.service_account import Credentials
 app=FastAPI(title="Evalora AI")
 SPREADSHEET_ID=os.getenv("SPREADSHEET_ID","1L8FuY_CFURGrRkWbEFAG_QsHTyF0oUJYfpCfNAl-sOw")
 WORKSHEET=os.getenv("GOOGLE_WORKSHEET","Evaluations")
-MODELS=[os.getenv("GEMINI_MODEL_1","gemini-3.8-flash"),os.getenv("GEMINI_MODEL_2","gemini-3.6-flash"),os.getenv("GEMINI_MODEL_3","gemini-3.5-flash-lite")]
+MODELS=[os.getenv("GEMINI_MODEL_2","gemini-3.6-flash"),os.getenv("GEMINI_MODEL_1","gemini-3.8-flash"),os.getenv("GEMINI_MODEL_3","gemini-3.5-flash-lite")]
 RATING_SCORES={"Outstanding":100,"Very Good":85,"Good":70,"Needs Improvement":40,"Incomplete":0}
 BASE_HEADERS=["Name","Project ID","Project Name","Phase Type","Questions","AI Confidence Score","Feedback","Suggestions","Overall Score"]
 EXTRA_HEADERS=["Model Name","Answer Accuracy (%)"]
