@@ -84,18 +84,52 @@ def normalize_compliance(raw):
   if req: out.append({'requirement':req,'status':valid.get(str(x.get('status','')).strip().lower(),'Not Satisfied'),'evidence':str(x.get('evidence','')).strip() or 'No supporting evidence identified.','gap':str(x.get('gap','')).strip() or 'No additional gap explanation provided.'})
  return out
 
-def create_prompt(name,project_id,project_name,phase,guidelines,submission):
- qs=PHASES[phase]; qtext='\n'.join(f'Q{i}: {q}' for i,q in enumerate(qs,1))
- return f'''You are Evalora AI, an evidence-based project evaluator. Perform TWO independent tasks: (A) phase-specific evaluation and (B) guideline-to-submission compliance. Compare meaning and evidence, not literal wording. Never invent evidence.
+def create_prompt(name, project_id, project_name, phase, guidelines="", submission="", sample_reference=""):
+ qs = PHASES[phase]
+ qtext = "\n".join(f"Q{i}: {q}" for i, q in enumerate(qs, 1))
+ if phase == "Ideation":
+  guideline_section = guidelines[:20000] if guidelines.strip() else "No readable guideline text was supplied."
+  sample_section = sample_reference[:15000] if sample_reference.strip() else "No separate sample project PPT was supplied. Do not infer mandatory requirements from a missing sample."
+  ideation_instructions = '''
+PHASE SCOPE — IDEATION ONLY:
+The guideline document and sample project PPT apply ONLY to the Ideation phase.
+The OFFICIAL GUIDELINES define explicit mandatory requirements and evaluation criteria. The SAMPLE PROJECT PPT is only an example to help students understand structure, presentation, and expected level of detail. Its topic, domain, project title, technology, features, and solution are NOT mandatory just because they appear in the sample.
+Evaluate the student's own project idea. Do not penalize a different topic from the sample. Extract requirements for Part B only from explicit official guideline requirements, not illustrative sample content. If formal requirements and examples appear mixed together and cannot be distinguished, do not assume the example topic is mandatory.
+'''
+  compliance_instructions = '''PART B — IDEATION GUIDELINE COMPLIANCE:
+Extract every distinct actionable requirement explicitly stated in the official Ideation guidelines. Do not convert the sample PPT's topic/title/features into requirements. Search the student submission for semantic evidence; synonyms and equivalent wording count. For each requirement return status exactly one of Satisfied, Partially Satisfied, Not Satisfied, Not Applicable. Missing evidence is Not Satisfied, not Not Applicable. Include requirement, evidence (quote briefly or faithfully paraphrase; say when none is found), and gap/improvement. A feature being mentioned is not proof it was implemented or tested. Do not invent statistics, tests, page numbers, or citations. If no explicit requirements can be extracted, return an empty list and mention the limitation in feedback. Keep compliance separate from phase ratings.'''
+ else:
+  guideline_section = "NOT APPLICABLE: This guideline document is used only for the Ideation phase. Do not use or infer any requirements from it for this evaluation."
+  sample_section = "NOT APPLICABLE: The sample project PPT is used only for the Ideation phase. Do not use its topic, domain, content, format, or features to evaluate this phase."
+  ideation_instructions = '''
+PHASE SCOPE — NON-IDEATION:
+This is a Design, Build, or Demo evaluation. Evaluate the student's actual submission using only the selected phase's questions and the phase-appropriate evidence present in the student submission. The Ideation guideline document and sample project PPT do not apply to this phase and must not affect ratings, feedback, suggestions, or requirements. Do not include any claim that the student failed to follow the Ideation guideline/sample PPT.
+'''
+  compliance_instructions = '''PART B — GUIDELINE COMPLIANCE:
+Guideline compliance is only performed during the Ideation phase. For this Design, Build, or Demo evaluation, return an empty guideline_compliance array: []. Do not extract or assess requirements from the Ideation guideline document or sample project PPT.'''
+ return f'''You are Evalora AI, an evidence-based project evaluator. Perform (A) phase-specific evaluation and (B) guideline compliance only where applicable. Compare meaning and evidence, not literal wording. Never invent evidence.
+
 STUDENT DETAILS: Name={name}; Project ID={project_id}; Project={project_name}; Phase={phase}
-PHASE QUESTIONS:\n{qtext}
-GUIDELINES:\n{guidelines[:20000]}
-STUDENT SUBMISSION:\n{submission[:30000]}
-PART A RULES: Evaluate Q1-Q5 independently using evidence and the selected phase. Return only these exact ratings: Outstanding, Very Good, Good, Needs Improvement, Incomplete. Outstanding=strong evidence/no major gaps; Very Good=minor gaps; Good=some meaningful details missing; Needs Improvement=major gaps; Incomplete=absent/not assessable. Q5 is an independent overall quality rating. Q6 is constructive feedback, not a rating. Give specific actionable suggestions. ai_confidence_score is 0-100 confidence in readability/completeness of supplied evidence. Do not return overall score; app calculates it. Mapping: Outstanding 100, Very Good 85, Good 70, Needs Improvement 40, Incomplete 0.
-PART B: Extract every distinct actionable applicable requirement from the actual guidelines, without inventing or duplicating requirements. Apply phase-specific requirements if the guideline states them. Search the full extracted submission for semantically relevant evidence; synonyms and equivalent wording count. Do not claim visual inspection of images not represented in extracted text. For each requirement return status exactly one of Satisfied, Partially Satisfied, Not Satisfied, Not Applicable. Missing evidence is Not Satisfied, not Not Applicable. Include requirement, evidence (quote briefly or faithfully paraphrase; state when none found), and gap/improvement. A mentioned feature is not proof it was implemented or tested; claims are not independent proof. Do not invent statistics, tests, page numbers or citations. If guidelines have no identifiable requirements, return an empty compliance list and explain limitation in feedback. Keep compliance separate from ratings.
+PHASE QUESTIONS:
+{qtext}
+{ideation_instructions}
+OFFICIAL GUIDELINES INPUT:
+{guideline_section}
+
+SAMPLE PROJECT PPT / REFERENCE INPUT:
+{sample_section}
+
+STUDENT SUBMISSION:
+{submission[:30000]}
+
+PART A — PHASE-SPECIFIC RATINGS:
+Evaluate Q1-Q5 independently using the student's submission and the selected phase's criteria. For Ideation, use explicit official guidelines as relevant but never treat sample topic/content as mandatory. For Design, Build, and Demo, use the student submission and the selected phase's questions only; do not use the Ideation guideline or sample PPT. Return only these exact ratings: Outstanding, Very Good, Good, Needs Improvement, Incomplete. Outstanding=strong evidence/no major gaps; Very Good=minor gaps; Good=some meaningful details missing; Needs Improvement=major gaps; Incomplete=absent/not assessable. Q5 is an independent overall quality rating. Q6 is constructive feedback, not a rating. Give specific actionable suggestions grounded in the student's own project. ai_confidence_score is 0-100 confidence in the readability and completeness of the student evidence, not confidence that the project matches the sample. Do not return overall score; app calculates it. Mapping: Outstanding 100, Very Good 85, Good 70, Needs Improvement 40, Incomplete 0.
+
+{compliance_instructions}
+
 Return valid JSON only, no markdown fences, with exactly this structure and actual results:
-{{"phase_answers":[{{"question":"{qs[0]}","answer":"Good"}},{{"question":"{qs[1]}","answer":"Very Good"}},{{"question":"{qs[2]}","answer":"Needs Improvement"}},{{"question":"{qs[3]}","answer":"Good"}},{{"question":"{qs[4]}","answer":"Needs Improvement"}},{{"question":"{qs[5]}","answer":"Constructive feedback."}}],"ai_confidence_score":80,"feedback":"Evidence-based overall feedback.","suggestions":"Specific actionable suggestions.","guideline_compliance":[{{"requirement":"Actual guideline requirement","status":"Satisfied","evidence":"Submission evidence","gap":"Remaining gap"}}]}}
-Example values are structural only; generate actual answers from the documents.'''
+{{"phase_answers":[{{"question":"{qs[0]}","answer":"Good"}},{{"question":"{qs[1]}","answer":"Very Good"}},{{"question":"{qs[2]}","answer":"Needs Improvement"}},{{"question":"{qs[3]}","answer":"Good"}},{{"question":"{qs[4]}","answer":"Needs Improvement"}},{{"question":"{qs[5]}","answer":"Constructive feedback."}}],"ai_confidence_score":80,"feedback":"Evidence-based overall feedback.","suggestions":"Specific actionable suggestions.","guideline_compliance":[]}}
+Example values are structural only; generate actual answers from the documents. For Ideation, populate guideline_compliance with actual requirement-level results; for Design, Build, or Demo, return an empty array.'''
 
 def call_gemini(prompt):
  key=os.getenv('GEMINI_API_KEY')
@@ -125,8 +159,10 @@ def append_to_google_sheet(row):
  if len(row)!=9: raise ValueError('Google Sheets expects exactly 9 columns.')
  connect_sheets().append_row(row,value_input_option='RAW')
 
-def compliance_report(items):
+def compliance_report(items, phase="Ideation"):
  lines=['### Guideline vs Student Submission','','Assessment compares meaning and evidence, not literal text matching.','']
+ if phase != "Ideation":
+  return '\n'.join(lines+['**Not evaluated for this phase. The guideline document and sample project PPT are used only for Ideation.**'])
  if not items: return '\n'.join(lines+['**Compliance assessment unavailable.** No usable requirement-level results were returned.'])
  labels={'Satisfied':'SATISFIED','Partially Satisfied':'PARTIALLY SATISFIED','Not Satisfied':'NOT SATISFIED','Not Applicable':'NOT APPLICABLE'}; counts={k:0 for k in labels}
  for i,x in enumerate(items,1):
@@ -140,23 +176,64 @@ def health(): return {'ok':True,'service':'Evalora AI','models':MODELS}
 @app.get('/api/phases')
 def phases(): return {'phases':list(PHASES),'questions':PHASES}
 @app.post('/api/evaluate')
-async def evaluate(name:str=Form(...),project_id:str=Form(...),project_name:str=Form(...),phase:str=Form(...),guideline_file:UploadFile=File(...),submission_file:UploadFile=File(...)):
- if phase not in PHASES: raise HTTPException(400,'Select a valid phase.')
+async def evaluate(
+ name: str = Form(...),
+ project_id: str = Form(...),
+ project_name: str = Form(...),
+ phase: str = Form(...),
+ guideline_file: UploadFile | None = File(None),
+ submission_file: UploadFile = File(...),
+ sample_file: UploadFile | None = File(None),
+):
+ if phase not in PHASES:
+  raise HTTPException(400, 'Select a valid phase.')
  try:
-  gd=await guideline_file.read(); sd=await submission_file.read()
-  if len(gd)>8*1024*1024 or len(sd)>8*1024*1024: raise HTTPException(413,'Each uploaded file must be 8 MB or smaller.')
-  guidelines=extract_document(guideline_file.filename,gd); submission=extract_document(submission_file.filename,sd)
-  result,model=call_gemini(create_prompt(name,project_id,project_name,phase,guidelines,submission))
-  answers=normalize_answers(result.get('phase_answers',[]),PHASES[phase]); compliance=normalize_compliance(result.get('guideline_compliance',[]))
-  score=round(sum(RATING_SCORES[x['answer']] for x in answers[:5])/5,2)
-  try: confidence=float(result.get('ai_confidence_score',0))
-  except (ValueError,TypeError): confidence=0
-  confidence=max(0,min(100,confidence)); feedback=str(result.get('feedback','')).strip() or 'No overall feedback provided.'; suggestions=str(result.get('suggestions','')).strip() or 'No suggestions provided.'
-  questions='\n\n'.join((f"Q{i}: {x['question']}\nRating: {x['answer']}" if i<=5 else f"Q{i}: {x['question']}\nFeedback: {x['answer']}") for i,x in enumerate(answers,1))
-  append_to_google_sheet([name,project_id,project_name,phase,questions,confidence,feedback,suggestions,score])
-  lines=['# Evaluation Results','',f'**Student:** {name}',f'**Project ID:** {project_id}',f'**Project:** {project_name}',f'**Phase:** {phase}','','## Overall Score: '+str(score)+'/100','',f'**AI Confidence:** {confidence}/100','','## Phase Ratings','']
-  for i,x in enumerate(answers[:5],1): lines += [f"### Q{i}: {x['question']}",'',f"**Rating:** {x['answer']}",'']
-  lines += ['## Additional Feedback','',answers[5]['answer'],'','## Overall Feedback','',feedback,'','## Suggestions','',suggestions,'',compliance_report(compliance)]
-  return {'success':True,'report':'\n'.join(lines),'status':f'Evaluation completed using {model}. Saved to Google Sheets.','overall_score':score,'confidence':confidence,'model_used':model,'sheet_saved':True}
- except HTTPException: raise
- except Exception as e: raise HTTPException(500,str(e)[:1200])
+  sd = await submission_file.read()
+  if len(sd) > 8 * 1024 * 1024:
+   raise HTTPException(413, 'The student submission must be 8 MB or smaller.')
+  submission = extract_document(submission_file.filename, sd)
+
+  # Guidelines and sample reference are used in Ideation only.
+  guidelines = ""
+  sample_text = ""
+  if phase == "Ideation":
+   if guideline_file is None or not guideline_file.filename:
+    raise HTTPException(400, 'Upload the official evaluation guideline for the Ideation phase.')
+   gd = await guideline_file.read()
+   if len(gd) > 8 * 1024 * 1024:
+    raise HTTPException(413, 'The Ideation guideline file must be 8 MB or smaller.')
+   guidelines = extract_document(guideline_file.filename, gd)
+   if sample_file is not None and sample_file.filename:
+    smd = await sample_file.read()
+    if len(smd) > 8 * 1024 * 1024:
+     raise HTTPException(413, 'The sample project PPT must be 8 MB or smaller.')
+    sample_text = extract_document(sample_file.filename, smd)
+  else:
+   # Intentionally do not read, extract, or send the Ideation guideline/sample content
+   # to Gemini for Design, Build, or Demo evaluations.
+   guidelines = ""
+   sample_text = ""
+
+  result, model = call_gemini(create_prompt(name, project_id, project_name, phase, guidelines, submission, sample_text))
+  answers = normalize_answers(result.get('phase_answers', []), PHASES[phase])
+  compliance = normalize_compliance(result.get('guideline_compliance', [])) if phase == 'Ideation' else []
+  score = round(sum(RATING_SCORES[x['answer']] for x in answers[:5]) / 5, 2)
+  try:
+   confidence = float(result.get('ai_confidence_score', 0))
+  except (ValueError, TypeError):
+   confidence = 0
+  confidence = max(0, min(100, confidence))
+  feedback = str(result.get('feedback', '')).strip() or 'No overall feedback provided.'
+  suggestions = str(result.get('suggestions', '')).strip() or 'No suggestions provided.'
+  questions = '\n\n'.join((f"Q{i}: {x['question']}\nRating: {x['answer']}" if i <= 5 else f"Q{i}: {x['question']}\nFeedback: {x['answer']}") for i, x in enumerate(answers, 1))
+  append_to_google_sheet([name, project_id, project_name, phase, questions, confidence, feedback, suggestions, score])
+  lines = ['# Evaluation Results', '', f'**Student:** {name}', f'**Project ID:** {project_id}', f'**Project:** {project_name}', f'**Phase:** {phase}', '', '## Overall Score: ' + str(score) + '/100', '', f'**AI Confidence:** {confidence}/100', '', '## Phase Ratings', '']
+  for i, x in enumerate(answers[:5], 1):
+   lines += [f"### Q{i}: {x['question']}", '', f"**Rating:** {x['answer']}", '']
+  lines += ['## Additional Feedback', '', answers[5]['answer'], '', '## Overall Feedback', '', feedback, '', '## Suggestions', '', suggestions, '', compliance_report(compliance, phase)]
+  compliance_status = 'Ideation guideline compliance included.' if phase == 'Ideation' else 'Ideation guideline/sample PPT skipped for this phase.'
+  return {'success': True, 'report': '\n'.join(lines), 'status': f'Evaluation completed using {model}. Saved to Google Sheets. {compliance_status}', 'overall_score': score, 'confidence': confidence, 'model_used': model, 'sheet_saved': True}
+ except HTTPException:
+  raise
+ except Exception as e:
+  raise HTTPException(500, str(e)[:1200])
