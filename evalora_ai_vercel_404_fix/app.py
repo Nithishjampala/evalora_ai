@@ -1,4 +1,4 @@
-import os,re,json,io
+import os,re,json,io,hashlib
 from pathlib import Path
 from fastapi import FastAPI,UploadFile,File,Form,HTTPException
 import fitz,docx,gspread
@@ -11,11 +11,12 @@ from google.oauth2.service_account import Credentials
 app=FastAPI(title="Evalora AI")
 SPREADSHEET_ID=os.getenv("SPREADSHEET_ID","1L8FuY_CFURGrRkWbEFAG_QsHTyF0oUJYfpCfNAl-sOw")
 WORKSHEET=os.getenv("GOOGLE_WORKSHEET","Evaluations")
-MODELS=[os.getenv("GEMINI_MODEL_3","gemini-3.5-flash-lite"),os.getenv("GEMINI_MODEL_2","gemini-3.6-flash"),os.getenv("GEMINI_MODEL_1","gemini-3.8-flash")]
+MODELS=["gemini-3.5-flash-lite"]  # Evalora uses only this model; no fallback models.
 RATING_SCORES={"Outstanding":100,"Very Good":85,"Good":70,"Needs Improvement":40,"Incomplete":0}
 BASE_HEADERS=["Name","Project ID","Project Name","Phase Type","Questions","AI Confidence Score","Feedback","Suggestions","Overall Score"]
 EXTRA_HEADERS=["Model Name","Answer Accuracy (%)"]
-HEADERS=BASE_HEADERS+EXTRA_HEADERS
+CACHE_HEADERS=["Input Fingerprint", "Cached Report"]
+HEADERS=BASE_HEADERS+EXTRA_HEADERS+CACHE_HEADERS
 PHASES={
 "Ideation":["How well did the team articulate the problem statement and support it with relevant statistics, data or evidence?","Is the proposed solution addressing a meaningful need for the identified users/stakeholders?","How well has the team researched existing solutions and competitors?","Is the proposed solution feasible and unique?","How would you rate the overall quality of the Ideation submission?","Additional feedback to candidate"],
 "Design":["How effectively does the design demonstrate the proposed solution?","How well does the design address the identified problem?","How effectively has the team demonstrated the core features?","How feasible is the design from a technical perspective?","How would you rate the overall quality of the Design submission?","Additional feedback to candidate"],
@@ -74,8 +75,30 @@ def normalize_answers(raw,questions):
  for i,q in enumerate(questions):
   a=lookup.get(q,'')
   a=normalize_rating(a) if i<5 else (str(a or '').strip() or 'No additional feedback provided.')
-  out.append({'question':q,'answer':a})
+  item={'question':q,'answer':a}
+  if i < 5:
+   item['rating_score']=RATING_SCORES[a]
+  out.append(item)
  return out
+
+def add_rating_scores_to_report(report):
+ """Add numeric question scores to older cached reports as well as new ones."""
+ if not report:
+  return report
+ pattern=r'(\*\*Rating:\*\*\s*)(Outstanding|Very Good|Needs Improvement|Incomplete|Good)(?!\s*\n\s*\*\*Rating Score:\*\*)'
+ def replace(match):
+  rating=match.group(2)
+  return f'{match.group(1)}{rating}\n\n**Rating Score:** {RATING_SCORES[rating]}/100'
+ return re.sub(pattern,replace,report)
+
+def get_phase_ratings(report):
+ """Extract display-ready question ratings from the saved evaluation report."""
+ report=add_rating_scores_to_report(report or '')
+ pattern=r'### Q(\d+):\s*(.*?)\n\n\*\*Rating:\*\*\s*(Outstanding|Very Good|Needs Improvement|Incomplete|Good)'
+ items=[]
+ for number,question,rating in re.findall(pattern,report):
+  items.append({'question_number':int(number),'question':question.strip(),'rating':rating,'rating_score':RATING_SCORES[rating]})
+ return items
 
 def normalize_compliance(raw):
  if not isinstance(raw,list): return []
@@ -125,6 +148,7 @@ STUDENT SUBMISSION:
 {submission[:30000]}
 
 PART A — PHASE-SPECIFIC RATINGS:
+CONSISTENCY RULES (MANDATORY): Apply the same rubric consistently on every evaluation. Judge only evidence present in the student submission; do not reward or penalize writing style, project topic, or similarity to the sample unless the selected question explicitly assesses it. For each Q1-Q5, internally identify the exact supporting evidence and the most important missing evidence before choosing a rating. Use these fixed thresholds: Outstanding = all key elements are explicitly evidenced with specific details and no material gap; Very Good = most key elements are evidenced with only minor gaps; Good = core element is present but one or more meaningful details/evidence are missing; Needs Improvement = major evidence or key elements are missing; Incomplete = the answer/section is absent, unreadable, or not assessable. Do not upgrade a rating based on generic claims without evidence. If evidence is ambiguous, choose the lower rating that the evidence clearly supports. Q1-Q4 must each be judged against their own question, and Q5 must summarize the quality of the whole submission using the same thresholds. Never change a rating merely to create score variation.
 Evaluate Q1-Q5 independently using the student's submission and the selected phase's criteria. For Ideation, use explicit official guidelines as relevant but never treat sample topic/content as mandatory. For Design, Build, and Demo, use the student submission and the selected phase's questions only; do not use the Ideation guideline or sample PPT. Return only these exact ratings: Outstanding, Very Good, Good, Needs Improvement, Incomplete. Outstanding=strong evidence/no major gaps; Very Good=minor gaps; Good=some meaningful details missing; Needs Improvement=major gaps; Incomplete=absent/not assessable. Q5 is an independent overall quality rating. Q6 is constructive feedback, not a rating. Give specific actionable suggestions grounded in the student's own project. ai_confidence_score is 0-100 confidence in the readability and completeness of the student evidence, not confidence that the project matches the sample. answer_accuracy is a separate AI-estimated 0-100 assessment of how accurately the ratings, feedback, and suggestions reflect evidence in the student's submission. Be conservative: deduct for unsupported claims, overlooked contradictory evidence, or conclusions not justified by the submission. This is an AI estimate, not independently verified ground-truth accuracy. Do not return overall score; app calculates it. Mapping: Outstanding 100, Very Good 85, Good 70, Needs Improvement 40, Incomplete 0.
 
 {compliance_instructions}
@@ -134,16 +158,29 @@ Return valid JSON only, no markdown fences, with exactly this structure and actu
 Example values are structural only; generate actual answers from the documents. For Ideation, populate guideline_compliance with actual requirement-level results; for Design, Build, or Demo, return an empty array.'''
 
 def call_gemini(prompt):
- key=os.getenv('GEMINI_API_KEY')
- if not key: raise ValueError('GEMINI_API_KEY is missing from Vercel Environment Variables.')
- client=genai.Client(api_key=key); errors=[]
- for model in MODELS:
-  try:
-   res=client.models.generate_content(model=model,contents=prompt,config=types.GenerateContentConfig(response_mime_type='application/json',temperature=0.2))
-   if not res.text: raise ValueError('Gemini returned an empty response.')
-   return parse_json(res.text),model
-  except Exception as e: errors.append(f'{model}: {str(e)[:220]}')
- raise RuntimeError('All configured Gemini models failed. Verify model IDs and API access.\n'+'\n'.join(errors))
+ # Use Gemini 3.5 Flash-Lite only. Limit output size to reduce latency and
+ # keep the request comfortably within the configured Vercel function duration.
+ key = os.getenv('GEMINI_API_KEY')
+ if not key:
+  raise ValueError('GEMINI_API_KEY is missing from Vercel Environment Variables.')
+ model = 'gemini-3.5-flash-lite'
+ try:
+  client = genai.Client(api_key=key, http_options=types.HttpOptions(timeout=180000))
+  res = client.models.generate_content(
+   model=model,
+   contents=prompt,
+   config=types.GenerateContentConfig(
+    response_mime_type='application/json',
+    temperature=0,
+    max_output_tokens=4096,
+   ),
+  )
+  if not res.text:
+   raise ValueError('Gemini returned an empty response. Please retry once.')
+  return parse_json(res.text), model
+ except Exception as e:
+  # Return a readable backend error rather than silently switching models.
+  raise RuntimeError(f'{model} evaluation failed: {str(e)[:700]}') from e
 
 def connect_sheets():
  raw=os.getenv('GOOGLE_SERVICE_ACCOUNT_JSON')
@@ -155,17 +192,50 @@ def connect_sheets():
  if ws.col_count < len(HEADERS): ws.resize(cols=len(HEADERS))
  headers=ws.row_values(1)
  if not headers:
-  ws.update(range_name='A1:K1',values=[HEADERS],value_input_option='RAW')
+  ws.update(range_name='A1:M1',values=[HEADERS],value_input_option='RAW')
  else:
   if headers[:len(BASE_HEADERS)] != BASE_HEADERS:
    raise ValueError('Worksheet row 1 must begin with these nine headers: '+' | '.join(BASE_HEADERS))
-  # Add the two requested columns after the existing nine columns, preserving old records.
   for offset, expected in enumerate(EXTRA_HEADERS, start=len(BASE_HEADERS)):
    existing = headers[offset] if len(headers) > offset else ''
    if existing and existing != expected:
     raise ValueError(f'Google Sheets column {offset + 1} must be named {expected!r}, not {existing!r}.')
+  # Existing evaluation rows and columns A:K are preserved; cache metadata is appended in L:M.
   ws.update(range_name='J1:K1',values=[EXTRA_HEADERS],value_input_option='RAW')
+  ws.update(range_name='L1:M1',values=[CACHE_HEADERS],value_input_option='RAW')
  return ws
+
+def make_fingerprint(name, project_id, project_name, phase, guidelines, submission, sample_text):
+ payload={
+  'version': 2,
+  'name': str(name).strip(), 'project_id': str(project_id).strip(),
+  'project_name': str(project_name).strip(), 'phase': phase,
+  'guidelines': guidelines if phase == 'Ideation' else '',
+  'submission': submission,
+  'sample_reference': sample_text if phase == 'Ideation' else '',
+  'model': 'gemini-3.5-flash-lite',
+  'rubric_version': 'consistent-rubric-v2'
+ }
+ canonical=json.dumps(payload,ensure_ascii=False,sort_keys=True,separators=(',',':'))
+ return hashlib.sha256(canonical.encode('utf-8')).hexdigest()
+
+def find_cached_evaluation(fingerprint):
+ """Return a prior exact-input report, if available, without calling Gemini again."""
+ ws=connect_sheets()
+ fingerprints=ws.col_values(12)  # Column L: Input Fingerprint
+ reports=ws.col_values(13)       # Column M: Cached Report
+ for row_index in range(2, len(fingerprints)+1):
+  if fingerprints[row_index-1] == fingerprint and row_index-1 < len(reports) and reports[row_index-1].strip():
+   row=ws.row_values(row_index)
+   score=row[8] if len(row)>8 else ''
+   confidence=row[5] if len(row)>5 else ''
+   model=row[9] if len(row)>9 else 'gemini-3.5-flash-lite'
+   try: score_value=float(score)
+   except (ValueError,TypeError): score_value=score
+   try: confidence_value=float(confidence)
+   except (ValueError,TypeError): confidence_value=confidence
+   return {'report':reports[row_index-1], 'overall_score':score_value, 'confidence':confidence_value, 'model_used':model}
+ return None
 
 def append_to_google_sheet(row):
  if len(row)!=len(HEADERS): raise ValueError(f'Google Sheets expects exactly {len(HEADERS)} columns.')
@@ -226,6 +296,23 @@ async def evaluate(
    guidelines = ""
    sample_text = ""
 
+  fingerprint = make_fingerprint(name, project_id, project_name, phase, guidelines, submission, sample_text)
+  cached = find_cached_evaluation(fingerprint)
+  if cached is not None:
+   cached_report=add_rating_scores_to_report(cached['report'])
+   return {
+    'success': True,
+    'report': cached_report,
+    'phase_ratings': get_phase_ratings(cached_report),
+    'rating_score_mapping': RATING_SCORES,
+    'status': 'Identical submission found. Reused the previously saved evaluation; no duplicate row was added.',
+    'overall_score': cached['overall_score'],
+    'confidence': cached['confidence'],
+    'model_used': cached['model_used'],
+    'sheet_saved': True,
+    'cache_hit': True
+   }
+
   result, model = call_gemini(create_prompt(name, project_id, project_name, phase, guidelines, submission, sample_text))
   answers = normalize_answers(result.get('phase_answers', []), PHASES[phase])
   compliance = normalize_compliance(result.get('guideline_compliance', [])) if phase == 'Ideation' else []
@@ -241,14 +328,16 @@ async def evaluate(
    answer_accuracy = ''
   feedback = str(result.get('feedback', '')).strip() or 'No overall feedback provided.'
   suggestions = str(result.get('suggestions', '')).strip() or 'No suggestions provided.'
-  questions = '\n\n'.join((f"Q{i}: {x['question']}\nRating: {x['answer']}" if i <= 5 else f"Q{i}: {x['question']}\nFeedback: {x['answer']}") for i, x in enumerate(answers, 1))
-  append_to_google_sheet([name, project_id, project_name, phase, questions, confidence, feedback, suggestions, score, model, answer_accuracy])
+  questions = '\n\n'.join((f"Q{i}: {x['question']}\nRating: {x['answer']} | Rating Score: {x['rating_score']}/100" if i <= 5 else f"Q{i}: {x['question']}\nFeedback: {x['answer']}") for i, x in enumerate(answers, 1))
   lines = ['# Evaluation Results', '', f'**Student:** {name}', f'**Project ID:** {project_id}', f'**Project:** {project_name}', f'**Phase:** {phase}', '', '## Overall Score: ' + str(score) + '/100', '', f'**AI Confidence:** {confidence}/100', '', '## Phase Ratings', '']
   for i, x in enumerate(answers[:5], 1):
-   lines += [f"### Q{i}: {x['question']}", '', f"**Rating:** {x['answer']}", '']
+   lines += [f"### Q{i}: {x['question']}", '', f"**Rating:** {x['answer']}", '', f"**Rating Score:** {x['rating_score']}/100", '']
   lines += ['## Additional Feedback', '', answers[5]['answer'], '', '## Overall Feedback', '', feedback, '', '## Suggestions', '', suggestions, '', compliance_report(compliance, phase)]
+  report='\n'.join(lines)
+  phase_ratings=[{'question_number':i,'question':x['question'],'rating':x['answer'],'rating_score':x['rating_score']} for i,x in enumerate(answers[:5],1)]
+  append_to_google_sheet([name, project_id, project_name, phase, questions, confidence, feedback, suggestions, score, model, answer_accuracy, fingerprint, report])
   compliance_status = 'Ideation guideline compliance included.' if phase == 'Ideation' else 'Ideation guideline/sample PPT skipped for this phase.'
-  return {'success': True, 'report': '\n'.join(lines), 'status': f'Evaluation completed using {model}. Saved to Google Sheets. {compliance_status}', 'overall_score': score, 'confidence': confidence, 'model_used': model, 'sheet_saved': True}
+  return {'success': True, 'report': report, 'phase_ratings': phase_ratings, 'rating_score_mapping': RATING_SCORES, 'status': f'Evaluation completed using {model}. Saved to Google Sheets. {compliance_status}', 'overall_score': score, 'confidence': confidence, 'model_used': model, 'sheet_saved': True, 'cache_hit': False}
  except HTTPException:
   raise
  except Exception as e:
